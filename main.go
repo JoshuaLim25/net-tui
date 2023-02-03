@@ -38,6 +38,7 @@ type dataMsg struct {
 	connections []connection
 	ports       []port
 	interfaces  []iface
+	err         error
 }
 
 // ----------------------------------------------------------------------------
@@ -64,6 +65,7 @@ type model struct {
 	offset int
 	width  int
 	height int
+	err    error
 
 	connections []connection
 	ports       []port
@@ -94,6 +96,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connections = msg.connections
 		m.ports = msg.ports
 		m.interfaces = msg.interfaces
+		m.err = msg.err
 		m.clampCursor()
 		return m, nil
 	}
@@ -207,8 +210,15 @@ func (m model) viewContent() string {
 }
 
 func (m model) viewFooter() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	if m.err != nil {
+		b.WriteString(styles.error.Render("error: " + m.err.Error()))
+		b.WriteString("\n")
+	}
 	help := "q quit • tab/1-3 switch • j/k navigate"
-	return "\n" + styles.dim.Render(help)
+	b.WriteString(styles.dim.Render(help))
+	return b.String()
 }
 
 // ----------------------------------------------------------------------------
@@ -221,6 +231,11 @@ func (m *model) viewConnections(height int) string {
 	header := fmt.Sprintf("%-7s %-21s %-21s %-11s %s",
 		"PROTO", "LOCAL", "REMOTE", "STATE", "PROCESS")
 	b.WriteString(styles.header.Render(header) + "\n")
+
+	if len(m.connections) == 0 {
+		b.WriteString("\n" + styles.dim.Render("  No active connections found.") + "\n")
+		return b.String()
+	}
 
 	m.adjustOffset(height - 1)
 	visible := m.visibleRange(len(m.connections), height-1)
@@ -256,6 +271,11 @@ func (m *model) viewPorts(height int) string {
 	header := fmt.Sprintf("%-7s %-7s %-16s %-8s %s",
 		"PORT", "PROTO", "ADDRESS", "PID", "PROCESS")
 	b.WriteString(styles.header.Render(header) + "\n")
+
+	if len(m.ports) == 0 {
+		b.WriteString("\n" + styles.dim.Render("  No listening ports found.") + "\n")
+		return b.String()
+	}
 
 	m.adjustOffset(height - 1)
 	visible := m.visibleRange(len(m.ports), height-1)
@@ -295,6 +315,11 @@ func (m *model) viewInterfaces(height int) string {
 	header := fmt.Sprintf("%-12s %-6s %-22s %-12s %s",
 		"NAME", "STATE", "ADDRESS", "RX", "TX")
 	b.WriteString(styles.header.Render(header) + "\n")
+
+	if len(m.interfaces) == 0 {
+		b.WriteString("\n" + styles.dim.Render("  No network interfaces found.") + "\n")
+		return b.String()
+	}
 
 	m.adjustOffset(height - 1)
 	visible := m.visibleRange(len(m.interfaces), height-1)
@@ -387,17 +412,31 @@ func tick() tea.Cmd {
 }
 
 func fetchData() tea.Msg {
+	conns, cErr := fetchConnections()
+	ports, pErr := fetchPorts()
+	ifaces, iErr := fetchInterfaces()
+
+	var err error
+	if cErr != nil {
+		err = cErr
+	} else if pErr != nil {
+		err = pErr
+	} else if iErr != nil {
+		err = iErr
+	}
+
 	return dataMsg{
-		connections: fetchConnections(),
-		ports:       fetchPorts(),
-		interfaces:  fetchInterfaces(),
+		connections: conns,
+		ports:       ports,
+		interfaces:  ifaces,
+		err:         err,
 	}
 }
 
-func fetchConnections() []connection {
+func fetchConnections() ([]connection, error) {
 	conns, err := psnet.Connections("all")
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("fetch connections: %w", err)
 	}
 
 	var result []connection
@@ -423,13 +462,13 @@ func fetchConnections() []connection {
 		result = append(result, conn)
 	}
 
-	return result
+	return result, nil
 }
 
-func fetchPorts() []port {
+func fetchPorts() ([]port, error) {
 	conns, err := psnet.Connections("all")
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("fetch ports: %w", err)
 	}
 
 	seen := make(map[string]bool)
@@ -465,13 +504,13 @@ func fetchPorts() []port {
 		return result[i].port < result[j].port
 	})
 
-	return result
+	return result, nil
 }
 
-func fetchInterfaces() []iface {
+func fetchInterfaces() ([]iface, error) {
 	netIfaces, err := net.Interfaces()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("fetch interfaces: %w", err)
 	}
 
 	counters, _ := psnet.IOCounters(true)
@@ -506,7 +545,7 @@ func fetchInterfaces() []iface {
 		result = append(result, ifc)
 	}
 
-	return result
+	return result, nil
 }
 
 func getProcessName(pid int32, cache map[int32]string) string {
@@ -581,13 +620,15 @@ var styles = struct {
 	tabInactive lipgloss.Style
 	stateUp     lipgloss.Style
 	stateDown   lipgloss.Style
+	error       lipgloss.Style
 }{
-	title:       lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#88C0D0")),
-	dim:         lipgloss.NewStyle().Foreground(lipgloss.Color("#4C566A")),
-	header:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#81A1C1")),
-	selected:    lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#2E3440")).Background(lipgloss.Color("#88C0D0")),
-	tabActive:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#88C0D0")).Background(lipgloss.Color("#3B4252")),
-	tabInactive: lipgloss.NewStyle().Foreground(lipgloss.Color("#4C566A")),
-	stateUp:     lipgloss.NewStyle().Foreground(lipgloss.Color("#A3BE8C")),
-	stateDown:   lipgloss.NewStyle().Foreground(lipgloss.Color("#BF616A")),
+	title:       lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")),
+	dim:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+	header:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")),
+	selected:    lipgloss.NewStyle().Reverse(true),
+	tabActive:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Underline(true),
+	tabInactive: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+	stateUp:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
+	stateDown:   lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
+	error:       lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
 }
