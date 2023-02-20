@@ -1,6 +1,6 @@
+version: "2"
 linters:
   enable:
-    - gofmt
     - govet
     - errcheck
     - staticcheck

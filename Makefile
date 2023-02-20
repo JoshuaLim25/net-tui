@@ -9,6 +9,9 @@ all: build
 build:
 	go build $(LDFLAGS) -o $(BINARY) .
 
+install: build
+	sudo install -m 755 $(BINARY) /usr/local/bin/
+
 run: build
 	./$(BINARY)
 
@@ -33,7 +36,7 @@ fmt:
 tidy:
 	go mod tidy
 
-# dev: rebuild on file changes (requires entr)
+# dev: rebuild on file changes
 dev:
 	find . -name '*.go' | entr -r make run
 
