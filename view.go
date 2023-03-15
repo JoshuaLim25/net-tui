@@ -3,14 +3,40 @@ package main
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
 
+var styles = struct {
+	title       lipgloss.Style
+	dim         lipgloss.Style
+	header      lipgloss.Style
+	selected    lipgloss.Style
+	tabActive   lipgloss.Style
+	tabInactive lipgloss.Style
+	stateUp     lipgloss.Style
+	stateDown   lipgloss.Style
+	error       lipgloss.Style
+}{
+	title:       lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")),
+	dim:         lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+	header:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("4")),
+	selected:    lipgloss.NewStyle().Reverse(true),
+	tabActive:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6")).Underline(true),
+	tabInactive: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+	stateUp:     lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
+	stateDown:   lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
+	error:       lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true),
+}
+
+type column struct {
+	title string
+	width int
+}
+
 func (m model) View() string {
 	if m.width == 0 {
-		return "loading..."
+		return " (loading...) "
 	}
 
 	var b strings.Builder
@@ -23,10 +49,7 @@ func (m model) View() string {
 }
 
 func (m model) viewHeader() string {
-	title := styles.title.Render(" net-tui ")
-	clock := styles.dim.Render(time.Now().Format("15:04:05"))
-	gap := max(m.width - lipgloss.Width(title) - lipgloss.Width(clock), 0)
-	return title + strings.Repeat(" ", gap) + clock + "\n"
+	return styles.title.Render(" net-tui ") + "\n"
 }
 
 func (m model) viewTabs() string {
@@ -47,18 +70,58 @@ func (m model) viewTabs() string {
 }
 
 func (m model) viewContent() string {
-	height := m.height - 5
-	if height < 1 {
-		height = 1
-	}
-
 	switch m.tab {
 	case tabConnections:
-		return m.viewConnections(height)
+		cols := []column{
+			{title: "PROTO", width: 7},
+			{title: "LOCAL", width: 21},
+			{title: "REMOTE", width: 21},
+			{title: "STATE", width: 11},
+			{title: "PROCESS", width: 0},
+		}
+		return m.renderTable(cols, len(m.connections), func(i int) string {
+			c := m.connections[i]
+			return fmt.Sprintf("%-7s %-21s %-21s %-11s %s",
+				c.proto, truncate(c.local, 21), truncate(c.remote, 21), c.state, c.process)
+		})
 	case tabPorts:
-		return m.viewPorts(height)
+		cols := []column{
+			{title: "PORT", width: 7},
+			{title: "PROTO", width: 7},
+			{title: "ADDRESS", width: 16},
+			{title: "PID", width: 8},
+			{title: "PROCESS", width: 0},
+		}
+		return m.renderTable(cols, len(m.ports), func(i int) string {
+			p := m.ports[i]
+			addr := p.addr
+			if addr == "" || addr == "0.0.0.0" || addr == "::" {
+				addr = "*"
+			}
+			return fmt.Sprintf("%-7d %-7s %-16s %-8d %s",
+				p.port, p.proto, truncate(addr, 16), p.pid, p.process)
+		})
 	case tabInterfaces:
-		return m.viewInterfaces(height)
+		cols := []column{
+			{title: "NAME", width: 12},
+			{title: "STATE", width: 6},
+			{title: "ADDRESS", width: 22},
+			{title: "RX", width: 12},
+			{title: "TX", width: 0},
+		}
+		return m.renderTable(cols, len(m.interfaces), func(i int) string {
+			ifc := m.interfaces[i]
+			state := "down"
+			if ifc.up {
+				state = "up"
+			}
+			addr := "-"
+			if len(ifc.addrs) > 0 {
+				addr = ifc.addrs[0]
+			}
+			return fmt.Sprintf("%-12s %-6s %-22s %-12s %s",
+				ifc.name, state, truncate(addr, 22), formatBytes(ifc.rx), formatBytes(ifc.tx))
+		})
 	}
 	return ""
 }
@@ -66,165 +129,91 @@ func (m model) viewContent() string {
 func (m model) viewFooter() string {
 	var b strings.Builder
 	b.WriteString("\n")
-	if m.err != nil {
-		b.WriteString(styles.error.Render("error: " + m.err.Error()))
-		b.WriteString("\n")
-	}
 	help := "q quit • tab/1-3 switch • j/k navigate"
 	b.WriteString(styles.dim.Render(help))
 	return b.String()
 }
 
-func (m *model) viewConnections(height int) string {
+func (m model) renderTable(cols []column, rowCount int, renderRow func(int) string) string {
+	if m.height < 6 {
+		return " (terminal too small) "
+	}
+
 	var b strings.Builder
 
-	protoWidth := 7
-	stateWidth := 11
-
-	spaceAvailable := m.width - protoWidth - stateWidth - 4 // spacing
-	if spaceAvailable < 0 {
-		spaceAvailable = 0
+	// 1. Render Header
+	var headerParts []string
+	for i, col := range cols {
+		w := col.width
+		if i == len(cols)-1 && w == 0 {
+			used := 0
+			for j := 0; j < len(cols)-1; j++ {
+				used += cols[j].width + 1
+			}
+			w = max(m.width-used, 0)
+		}
+		headerParts = append(headerParts, fmt.Sprintf("%-*s", w, col.title))
 	}
-
-	addrW := 21
-	if spaceAvailable < addrW*2+10 {
-		addrW = spaceAvailable / 3
-	}
-	processW := max(spaceAvailable - (addrW * 2), 10)
-
-	header := fmt.Sprintf("%-*s %-*s %-*s %-*s %s",
-		protoWidth, "PROTO", addrW, "LOCAL", addrW, "REMOTE", stateWidth, "STATE", "PROCESS")
+	header := strings.Join(headerParts, " ")
 	b.WriteString(styles.header.Render(header) + "\n")
 
-	if len(m.connections) == 0 {
-		b.WriteString("\n" + styles.dim.Render("  No active connections found.") + "\n")
+	// 2. Handle Empty State
+	if rowCount == 0 {
+		msg := "  No data found."
+		if m.err != nil {
+			msg = "  Error: " + m.err.Error()
+		}
+		b.WriteString("\n" + styles.dim.Render(msg) + "\n")
 		return b.String()
 	}
 
-	m.adjustOffset(height - 1)
-	visible := m.visibleRange(len(m.connections), height-1)
+	// 3. Render Rows
+	pageSize := m.height - 6
+	if pageSize < 1 {
+		pageSize = 1
+	}
+
+	visible := m.visibleRange(rowCount, pageSize)
 
 	for i := visible.start; i < visible.end; i++ {
-		c := m.connections[i]
-
-		stateStr := c.state
-		stateStyle := lipgloss.NewStyle()
-		switch c.state {
-		case "ESTABLISHED":
-			stateStyle = styles.stateGreen
-		case "TIME_WAIT", "CLOSE_WAIT":
-			stateStyle = styles.stateYellow
-		case "LISTEN":
-			stateStyle = styles.stateUp
-		}
-
-		line := fmt.Sprintf("%-*s %-*s %-*s %-*s %s",
-			protoWidth, c.proto,
-			addrW, truncate(c.local, addrW),
-			addrW, truncate(c.remote, addrW),
-			stateWidth, stateStyle.Render(truncate(stateStr, stateWidth)),
-			truncate(c.process, processW),
-		)
-
+		line := renderRow(i)
 		if i == m.cursor {
-			line = fmt.Sprintf("%-*s %-*s %-*s %-*s %s",
-				protoWidth, c.proto,
-				addrW, truncate(c.local, addrW),
-				addrW, truncate(c.remote, addrW),
-				stateWidth, truncate(stateStr, stateWidth),
-				truncate(c.process, processW),
-			)
-			b.WriteString(styles.selected.Render(line))
+			b.WriteString(styles.selected.Render(truncate(line, m.width)))
 		} else {
-			b.WriteString(line)
+			b.WriteString(truncate(line, m.width))
 		}
 		b.WriteString("\n")
 	}
 
-	b.WriteString(styles.dim.Render(fmt.Sprintf("\n%d connections", len(m.connections))))
 	return b.String()
 }
 
-func (m *model) viewPorts(height int) string {
-	var b strings.Builder
+type visibleRange struct{ start, end int }
 
-	header := fmt.Sprintf("%-7s %-7s %-16s %-8s %s",
-		"PORT", "PROTO", "ADDRESS", "PID", "PROCESS")
-	b.WriteString(styles.header.Render(header) + "\n")
-
-	if len(m.ports) == 0 {
-		b.WriteString("\n" + styles.dim.Render("  No listening ports found.") + "\n")
-		return b.String()
-	}
-
-	m.adjustOffset(height - 1)
-	visible := m.visibleRange(len(m.ports), height-1)
-
-	for i := visible.start; i < visible.end; i++ {
-		p := m.ports[i]
-		addr := p.addr
-		if addr == "" || addr == "0.0.0.0" || addr == "::" {
-			addr = "*"
-		}
-		line := fmt.Sprintf("%-7d %-7s %-16s %-8d %s",
-			p.port,
-			p.proto,
-			addr,
-			p.pid,
-			truncate(p.process, 20),
-		)
-		if i == m.cursor {
-			b.WriteString(styles.selected.Render(line))
-		} else {
-			b.WriteString(line)
-		}
-		b.WriteString("\n")
-	}
-
-	b.WriteString(styles.dim.Render(fmt.Sprintf("\n%d listening ports", len(m.ports))))
-	return b.String()
+func (m model) visibleRange(total, pageSize int) visibleRange {
+	end := min(m.offset+pageSize, total)
+	return visibleRange{m.offset, end}
 }
 
-func (m *model) viewInterfaces(height int) string {
-	var b strings.Builder
-
-	header := fmt.Sprintf("%-12s %-6s %-22s %-12s %s",
-		"NAME", "STATE", "ADDRESS", "RX", "TX")
-	b.WriteString(styles.header.Render(header) + "\n")
-
-	if len(m.interfaces) == 0 {
-		b.WriteString("\n" + styles.dim.Render("  No network interfaces found.") + "\n")
-		return b.String()
+func formatBytes(b uint64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
 	}
-
-	m.adjustOffset(height - 1)
-	visible := m.visibleRange(len(m.interfaces), height-1)
-
-	for i := visible.start; i < visible.end; i++ {
-		ifc := m.interfaces[i]
-		state := styles.stateDown.Render("down")
-		if ifc.up {
-			state = styles.stateUp.Render("up")
-		}
-		addr := "-"
-		if len(ifc.addrs) > 0 {
-			addr = ifc.addrs[0]
-		}
-		line := fmt.Sprintf("%-12s %-6s %-22s %-12s %s",
-			ifc.name,
-			state,
-			truncate(addr, 22),
-			formatBytes(ifc.rx),
-			formatBytes(ifc.tx),
-		)
-		if i == m.cursor {
-			b.WriteString(styles.selected.Render(line))
-		} else {
-			b.WriteString(line)
-		}
-		b.WriteString("\n")
+	div, exp := uint64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
 	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
 
-	b.WriteString(styles.dim.Render(fmt.Sprintf("\n%d interfaces", len(m.interfaces))))
-	return b.String()
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }

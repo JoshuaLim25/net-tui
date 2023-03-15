@@ -1,13 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 
+	tea "github.com/charmbracelet/bubbletea"
 	psnet "github.com/shirou/gopsutil/v3/net"
 	"github.com/shirou/gopsutil/v3/process"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 type connection struct {
@@ -40,20 +42,12 @@ func fetchData() tea.Msg {
 	ports, pErr := fetchPorts()
 	ifaces, iErr := fetchInterfaces()
 
-	var err error
-	if cErr != nil {
-		err = cErr
-	} else if pErr != nil {
-		err = pErr
-	} else if iErr != nil {
-		err = iErr
-	}
-
 	return dataMsg{
 		connections: conns,
 		ports:       ports,
 		interfaces:  ifaces,
-		err:         err,
+		err:         errors.Join(cErr, pErr, iErr),
+		privileged:  os.Geteuid() == 0,
 	}
 }
 

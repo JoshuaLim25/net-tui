@@ -13,6 +13,7 @@ type dataMsg struct {
 	ports       []port
 	interfaces  []iface
 	err         error
+	privileged  bool
 }
 
 type tab int
@@ -41,7 +42,9 @@ type model struct {
 }
 
 func newModel() model {
-	return model{tab: tabConnections}
+	return model{
+		tab: tabConnections,
+	}
 }
 
 func (m model) Init() tea.Cmd {
@@ -51,10 +54,13 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		return m.handleKey(msg)
+		m, cmd := m.handleKey(msg)
+		m.adjustOffset()
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.adjustOffset()
 		return m, nil
 	case tickMsg:
 		return m, tea.Batch(fetchData, tick())
@@ -64,12 +70,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.interfaces = msg.interfaces
 		m.err = msg.err
 		m.clampCursor()
+		m.adjustOffset()
 		return m, nil
 	}
 	return m, nil
 }
 
-func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleKey(msg tea.KeyMsg) (model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -102,12 +109,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) clampCursor() {
-	max := m.listLen() - 1
-	if max < 0 {
-		max = 0
+	maxIdx := m.listLen() - 1
+	if maxIdx < 0 {
+		maxIdx = 0
 	}
-	if m.cursor > max {
-		m.cursor = max
+	if m.cursor > maxIdx {
+		m.cursor = maxIdx
 	}
 }
 
@@ -121,6 +128,19 @@ func (m model) listLen() int {
 		return len(m.interfaces)
 	}
 	return 0
+}
+
+func (m *model) adjustOffset() {
+	pageSize := m.height - 6 // header, tabs, footer, table header
+	if pageSize < 1 {
+		pageSize = 1
+	}
+
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	} else if m.cursor >= m.offset+pageSize {
+		m.offset = m.cursor - pageSize + 1
+	}
 }
 
 func tick() tea.Cmd {

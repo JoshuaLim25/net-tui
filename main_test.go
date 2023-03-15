@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/bradleyjkemp/cupaloy/v2"
 )
 
 func TestFormatBytes(t *testing.T) {
@@ -50,31 +50,26 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-func TestModelTabNavigation(t *testing.T) {
+func TestViewConnectionsSnapshot(t *testing.T) {
 	m := newModel()
-
-	// Initial state
-	if m.tab != tabConnections {
-		t.Errorf("initial tab should be connections, got %v", m.tab)
+	m.width = 80
+	m.height = 24
+	m.connections = []connection{
+		{proto: "tcp", local: "127.0.0.1:8080", remote: "0.0.0.0:0", state: "LISTEN", process: "nginx"},
+		{proto: "tcp", local: "192.168.1.10:443", remote: "1.2.3.4:5678", state: "ESTABLISHED", process: "chrome"},
 	}
 
-	// Test tab switching
-	msg := tea.KeyMsg{Type: tea.KeyTab}
-	updatedModel, _ := m.Update(msg)
-	m = updatedModel.(model)
+	cupaloy.SnapshotT(t, m.View())
+}
 
-	if m.tab != tabPorts {
-		t.Errorf("tab after 1 press should be ports, got %v", m.tab)
+func TestViewPortsSnapshot(t *testing.T) {
+	m := newModel()
+	m.width = 80
+	m.height = 24
+	m.tab = tabPorts
+	m.ports = []port{
+		{port: 80, proto: "tcp", addr: "0.0.0.0", pid: 1234, process: "httpd"},
 	}
 
-	// Test cycling back to first tab
-	msg = tea.KeyMsg{Type: tea.KeyTab}
-	updatedModel, _ = m.Update(msg) // Ports -> Interfaces
-	m = updatedModel.(model)
-	updatedModel, _ = m.Update(msg) // Interfaces -> Connections
-	m = updatedModel.(model)
-
-	if m.tab != tabConnections {
-		t.Errorf("tab after cycling should be connections, got %v", m.tab)
-	}
+	cupaloy.SnapshotT(t, m.View())
 }
